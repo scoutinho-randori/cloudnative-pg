@@ -7,3 +7,4 @@ spec:
 
   storage:
     size: 1Gi
+  existingPvcClaim: true
