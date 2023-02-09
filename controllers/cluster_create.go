@@ -866,7 +866,6 @@ func (r *ClusterReconciler) generateNodeSerial(ctx context.Context, cluster *api
 	if err := r.Status().Update(ctx, cluster); err != nil {
 		return 0, err
 	}
-
 	return cluster.Status.LatestGeneratedNode, nil
 }
 
@@ -901,7 +900,6 @@ func (r *ClusterReconciler) createPrimaryInstance(
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("cannot generate node serial: %w", err)
 	}
-
 	if err := r.createPVC(
 		ctx,
 		cluster,
@@ -914,7 +912,6 @@ func (r *ClusterReconciler) createPrimaryInstance(
 	); err != nil {
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
-
 	if cluster.ShouldCreateWalArchiveVolume() {
 		if err := r.createPVC(
 			ctx,
@@ -934,6 +931,9 @@ func (r *ClusterReconciler) createPrimaryInstance(
 	var job *batchv1.Job
 
 	switch {
+	// case cluster.Spec.ExistingPVCClaim == true:
+	// 	// dont create any jobs or pvcs
+	// 	return ctrl.Result{RequeueAfter: 30 * time.Second}, ErrNextLoop
 	case cluster.Spec.Bootstrap != nil && cluster.Spec.Bootstrap.Recovery != nil:
 		var backup *apiv1.Backup
 		if cluster.Spec.Bootstrap.Recovery.Backup != nil {
@@ -1122,6 +1122,7 @@ func (r *ClusterReconciler) reconcilePVCs(
 	cluster *apiv1.Cluster,
 	resources *managedResources,
 	instancesStatus postgres.PostgresqlStatusList,
+	existingPVCName string,
 ) (ctrl.Result, error) {
 	contextLogger := log.FromContext(ctx)
 
@@ -1131,8 +1132,12 @@ func (r *ClusterReconciler) reconcilePVCs(
 		contextLogger.Debug("Waiting for node to be ready before attaching PVCs")
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, ErrNextLoop
 	}
-
-	pvcToReattach := electPvcToReattach(cluster)
+	pvcToReattach := ""
+	if existingPVCName != "" {
+		pvcToReattach = existingPVCName
+	} else {
+		pvcToReattach = electPvcToReattach(cluster)
+	}
 	if pvcToReattach == "" {
 		// This should never happen. This function should be invoked
 		// only when there is something to reattach.
@@ -1237,7 +1242,6 @@ func electPvcToReattach(cluster *apiv1.Cluster) string {
 	if len(pvcs) == 0 {
 		return ""
 	}
-
 	for _, pvc := range pvcs {
 		if persistentvolumeclaim.IsUsedByInstance(cluster, cluster.Status.TargetPrimary, pvc) {
 			return pvc
@@ -1245,6 +1249,20 @@ func electPvcToReattach(cluster *apiv1.Cluster) string {
 	}
 
 	return pvcs[0]
+}
+
+// GetExistingPVCByName get an Existing By Name
+func (r *ClusterReconciler) GetExistingPVCByName(ctx context.Context, cluster *apiv1.Cluster, pvcName string, role utils.PVCRole) *corev1.PersistentVolumeClaim {
+	var pvc corev1.PersistentVolumeClaim
+
+	err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: pvcName}, &pvc)
+	if err != nil {
+		// Ignore if NotFound, otherwise report the error
+		if apierrs.IsNotFound(err) {
+			return nil
+		}
+	}
+	return &pvc
 }
 
 // removeDanglingPVCs will remove dangling PVCs

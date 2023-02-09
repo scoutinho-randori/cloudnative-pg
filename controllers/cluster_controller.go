@@ -96,9 +96,9 @@ var ErrNextLoop = errors.New("stop this loop and return the associated Result ob
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;create;list;watch;delete;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=create;delete;get;list;watch;update;patch
-// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters/status,verbs=get;watch;update;patch
+// +kubebuilder:rbac:groups=postgresqlx.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=postgresqlx.cnpg.io,resources=clusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=postgresqlx.cnpg.io,resources=clusters/status,verbs=get;watch;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=create;patch;update;get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=create;patch;update;get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;watch;delete;patch
@@ -580,7 +580,7 @@ func (r *ClusterReconciler) ReconcilePods(ctx context.Context, cluster *apiv1.Cl
 			"jobs", len(resources.jobs.Items))
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, ErrNextLoop
 	}
-
+	// this wont happen for an existing pvc.
 	if err := r.markPVCReadyForCompletedJobs(ctx, resources); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -588,7 +588,29 @@ func (r *ClusterReconciler) ReconcilePods(ctx context.Context, cluster *apiv1.Cl
 	// Work on the PVCs we currently have
 	pvcNeedingMaintenance := len(cluster.Status.DanglingPVC) + len(cluster.Status.InitializingPVC)
 	if pvcNeedingMaintenance > 0 {
-		return r.reconcilePVCs(ctx, cluster, resources, instancesStatus)
+		return r.reconcilePVCs(ctx, cluster, resources, instancesStatus, "")
+	}
+
+	if cluster.Spec.ExistingPVCClaim {
+		newNodeSerial, err := r.generateNodeSerial(ctx, cluster)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("cannot generate node serial: %w", err)
+		}
+		pvcName := fmt.Sprintf("%s-%d", cluster.Name, newNodeSerial)
+		dataPVCName := persistentvolumeclaim.GetName(cluster, pvcName, utils.PVCRolePgData)
+		dataPVC := r.GetExistingPVCByName(ctx, cluster, dataPVCName, utils.PVCRolePgData)
+		if dataPVC != nil {
+			// we can set the owner reference here so that the cluster controls this pvc now. it should become a dangling pvc.
+			ctrl.SetControllerReference(cluster, dataPVC, r.Scheme)
+			childPVCs, err := r.getManagedPVCs(ctx, cluster)
+			if err != nil {
+				log.Info("Could not get Child PVCS")
+				return ctrl.Result{}, err
+			}
+			resources.pvcs = childPVCs
+			return r.reconcilePVCs(ctx, cluster, resources, instancesStatus, dataPVCName)
+		}
+		log.Info("DataPVC", pvcName, "could not be found, newNodeSerial is not right", newNodeSerial)
 	}
 
 	if err := r.ensureHealthyPVCsAnnotation(ctx, cluster, resources); err != nil {
@@ -605,7 +627,7 @@ func (r *ClusterReconciler) ReconcilePods(ctx context.Context, cluster *apiv1.Cl
 	//
 	// 3 - We have already some Pods, all they all ready ==> we can create the other
 	// pods joining the node that we already have.
-	if cluster.Status.Instances == 0 {
+	if cluster.Status.Instances == 0 && !cluster.Spec.ExistingPVCClaim {
 		return r.createPrimaryInstance(ctx, cluster)
 	}
 

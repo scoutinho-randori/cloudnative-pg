@@ -21,7 +21,7 @@
 ifeq (,$(CONTROLLER_IMG))
 IMAGE_TAG = $(shell (git symbolic-ref -q --short HEAD || git describe --tags --exact-match) | tr / -)
 ifneq (,${IMAGE_TAG})
-CONTROLLER_IMG = ghcr.io/cloudnative-pg/cloudnative-pg-testing:${IMAGE_TAG}
+CONTROLLER_IMG = ghcr.io/scoutinho-randori/cloudnative-pg-testing:${IMAGE_TAG}
 endif
 endif
 

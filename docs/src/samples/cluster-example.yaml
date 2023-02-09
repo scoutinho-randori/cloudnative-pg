@@ -1,4 +1,4 @@
-apiVersion: postgresql.cnpg.io/v1
+apiVersion: postgresqlx.cnpg.io/v1
 kind: Cluster
 metadata:
   name: cluster-example
@@ -7,3 +7,4 @@ spec:
 
   storage:
     size: 1Gi
+  existingPvcClaim: true
